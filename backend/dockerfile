@@ -1,9 +1,7 @@
 FROM maven:3.8.3-openjdk-17
 COPY . /opt/
 WORKDIR /opt
-RUN rm -f src/main/resources/application.properties && \
-    cp -f application.properties src/main/resources/application.properties && \
-    mvn clean package 
+RUN mvn clean package 
 WORKDIR target/
 EXPOSE 8080
 ENTRYPOINT ["java","-jar"]
