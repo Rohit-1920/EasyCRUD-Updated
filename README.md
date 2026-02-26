@@ -79,7 +79,7 @@ SHOW DATABASES;
 ## Step 1 -- Clone Repository
 
 ``` bash
-git clone https://github.com/Rohit-1920/EasyCRUD-Updated.git
+git clone https://github.com/Milind2803/EasyCRUD-Updated-k8s.git
 cd EasyCRUD-Updated
 ```
 
