@@ -43,12 +43,7 @@ GRANT ALL PRIVILEGES ON springbackend.* TO 'username'@'localhost' IDENTIFIED BY 
 ```
 Replace username and your_password with your desired username and password.
 
-Exit MariaDB:
 
-```sql
-
-EXIT;
-```
 
 ## 4. You will need Database Credentials to Connect Backend with Database
 1. DB_HOST
@@ -74,7 +69,11 @@ CREATE TABLE `students` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=80 DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci;
 ```
+EXIT FROM DATABASE
+```sql
 
+EXIT;
+```
 
 
 
