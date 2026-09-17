@@ -82,62 +82,66 @@ Files that make this work, already on the `dev` branch:
 
 ---
 
-## Phase 2 — Using the Default VPC (no CloudFormation)
+## Phase 2 — Using the Default VPC + a NAT Gateway
 
-You're using the account's **Default VPC** and its existing subnets — no new
-VPC. There's one important fact this depends on: **Fargate pods never get a
-public IP, even in a subnet that routes straight to an Internet Gateway.** So
-regardless of "public" vs "private" labeling, pods need a route to a **NAT
-Gateway** to reach the internet (to pull images from ECR). The Default VPC
-doesn't have one, so we add just that — everything else stays as-is.
+You're using the account's **Default VPC** as-is — no new VPC. `ap-south-1`
+has 3 AZs, so your Default VPC has exactly **3 subnets** and **1 route
+table** (the main one, shared by all 3 subnets, routing `0.0.0.0/0` straight
+to the Internet Gateway) — that's the starting point this phase assumes.
 
-Plan: keep 2 of the default subnets (different AZs) untouched for the **ALB**,
-and re-point 2 *other* default subnets (different AZs) to a NAT Gateway for
-the **Fargate pods**. No subnets are created or deleted — we're just adding a
-NAT Gateway and changing which route table 2 of the existing subnets use.
+One fact we have to work around: **AWS's EKS Fargate API rejects any subnet
+with a direct Internet Gateway route** (it errors "not a private subnet"),
+and Fargate pods never get a public IP regardless. So one of your 3 subnets
+needs to stop using the IGW route and go through a **NAT Gateway** instead —
+that's the only change we're making; the VPC and all 3 subnets themselves
+stay exactly as they are otherwise.
 
-1. Console → **VPC** → **Your VPCs** → find the one marked "Default VPC: Yes".
-   Note its **VPC ID**.
-2. **Subnets** (left nav) → filter by that VPC ID. You'll see one subnet per
-   AZ, each already with a route to the Internet Gateway and "Auto-assign
-   public IPv4" = Yes. Note at least 4 subnet IDs across at least 2 AZs (most
-   regions have 3+ AZs, so this is usually already there):
-   - 2 subnets → **ALB subnets** (leave these completely alone)
-   - 2 different subnets → **Pod subnets** (these get re-routed below)
-3. **Elastic IPs** → **Allocate Elastic IP address** → allocate one (no config needed).
-4. **NAT Gateways** → **Create NAT gateway** → subnet = one of your **ALB
-   subnets** (it needs the IGW route) → Elastic IP allocation = the one from
-   step 3 → **Create NAT gateway**. Wait until its status is `Available`.
+Split of the 3 subnets:
+- **2 subnets → ALB subnets** — left completely untouched, still on the main
+  route table with the IGW route. An internet-facing ALB needs subnets in at
+  least 2 AZs, so these 2 cover that.
+- **1 subnet → Pod subnet** — this is where both your app's Fargate profile
+  and CoreDNS's Fargate profile will run. Single-AZ for the pods is fine for
+  a project like this (not highly-available, but simple and works).
+
+Steps:
+
+1. Console → **VPC** → **Your VPCs** → the one marked "Default VPC: Yes" →
+   note its **VPC ID**.
+2. **Subnets** (left nav) → filter by that VPC ID → you'll see your 3
+   subnets, one per AZ (`ap-south-1a`, `ap-south-1b`, `ap-south-1c`). Pick
+   one to be the **Pod subnet** (any AZ is fine) — note its subnet ID. The
+   other 2 are your **ALB subnets** — note their IDs too, but don't touch them.
+3. **Elastic IPs** → **Allocate Elastic IP address** → allocate one (defaults are fine).
+4. **NAT Gateways** → **Create NAT gateway** → Subnet = one of your **ALB
+   subnets** (it needs to be one that still has the IGW route) → Elastic IP
+   allocation = the one from step 3 → **Create NAT gateway**. Wait for status
+   `Available` (a few minutes).
 5. **Route Tables** → **Create route table** → name `easycrud-pod-rt`, VPC =
-   the Default VPC → **Create**.
+   the Default VPC → **Create**. This becomes your 2nd route table.
    - Open it → **Routes** tab → **Edit routes** → **Add route** →
      `0.0.0.0/0` → target = the NAT Gateway from step 4 → **Save**.
    - **Subnet associations** tab → **Edit subnet associations** → check your
-     2 **Pod subnets** → **Save**. (This is the only thing that changes about
-     those subnets — they keep existing, just stop using the main/IGW route
-     table.)
+     **Pod subnet** → **Save**. (This is the only thing that changes about
+     it — it keeps existing, just stops using the main/IGW route table.)
 6. Tag the subnets so EKS and the ALB controller can auto-discover them
    (Subnets page → select a subnet → **Tags** tab → **Manage tags**):
    - On the 2 **ALB subnets**: add `kubernetes.io/role/elb` = `1`
-   - On the 2 **Pod subnets**: add `kubernetes.io/role/internal-elb` = `1`
+   - On the **Pod subnet**: add `kubernetes.io/role/internal-elb` = `1`
    - You'll add one more tag (`kubernetes.io/cluster/easycrud-cluster` =
-     `shared`) to all 4 subnets after the cluster exists in Phase 4 — EKS adds
+     `shared`) to all 3 subnets after the cluster exists in Phase 4 — EKS adds
      this automatically to subnets you select during cluster creation, so
      there's nothing to do here yet.
 
 - [ ] Default VPC ID noted
-- [ ] 2 ALB subnet IDs and 2 Pod subnet IDs noted
+- [ ] 2 ALB subnet IDs and 1 Pod subnet ID noted
 - [ ] NAT Gateway `Available`
-- [ ] `easycrud-pod-rt` created, routes to NAT Gateway, associated with the 2 Pod subnets
+- [ ] `easycrud-pod-rt` created, routes `0.0.0.0/0` to the NAT Gateway, associated with the Pod subnet
 - [ ] `kubernetes.io/role/elb=1` tag on the 2 ALB subnets
 
-> **Cost note:** a NAT Gateway runs about $0.045/hr (~$32/month) plus a small
-> per-GB data charge — this is the one recurring cost this setup adds beyond
-> EKS, RDS, and the ALB itself. If you want to avoid it entirely, the
-> alternative is several VPC Interface Endpoints (ECR API, ECR DKR, STS,
-> EC2, ELB) plus the free S3 Gateway endpoint — more setup, but no NAT
-> Gateway charge. Stick with the NAT Gateway above unless that trade-off
-> matters to you.
+> **Cost note:** the NAT Gateway runs about $0.045/hr (~$32/month) plus a
+> small per-GB data charge — this is the one recurring cost this setup adds
+> beyond EKS, RDS, and the ALB itself.
 
 ---
 
@@ -187,8 +191,8 @@ IAM → **Roles** → **Create role**, three times:
 1. Console → **EKS** → **Clusters** → **Create cluster**.
 2. Name: `easycrud-cluster`. Kubernetes version: latest available. Cluster
    service role: `easycrud-eks-cluster-role`.
-3. **Networking** step: VPC = your Default VPC; select **all 4** subnets from
-   Phase 2 (the 2 ALB subnets + the 2 Pod subnets). Cluster endpoint access:
+3. **Networking** step: VPC = your Default VPC; select **all 3** subnets from
+   Phase 2 (the 2 ALB subnets + the Pod subnet). Cluster endpoint access:
    **Public and private**.
 4. Leave add-ons at their defaults (CoreDNS, kube-proxy, VPC CNI).
 5. **Create**. Takes ~10-15 minutes.
@@ -204,11 +208,11 @@ Once the cluster is `Active`, cluster page → **Compute** tab → **Add Fargate
 **Profile 1 — your app**
 - Name: `easycrud-profile`
 - Pod execution role: `easycrud-eks-fargate-role`
-- Subnets: only the 2 **Pod subnets** from Phase 2 (the ones routed to the NAT Gateway)
+- Subnets: only the **Pod subnet** from Phase 2 (the one on `easycrud-pod-rt`)
 - Namespace selector: `easycrud`
 
 **Profile 2 — CoreDNS (required, easy to miss)**
-- Subnets: same 2 **Pod subnets** as Profile 1
+- Subnets: same **Pod subnet** as Profile 1
 - Namespace: `kube-system`
 - Labels: `k8s-app: kube-dns`
 
@@ -277,11 +281,11 @@ Cluster page → **Access** tab → **Create access entry**:
 This replaces "spin up an EC2 box just to touch the database":
 
 1. Console → **CloudShell** → **Actions → Create VPC environment**.
-2. Pick the Default VPC from Phase 2, one of the **Pod subnets** (it has NAT
-   Gateway internet access, so CloudShell can still reach the package
-   repos), and a security group that's allowed into your RDS security group
-   on port 3306 (add an inbound rule on the RDS SG for that CloudShell SG, or
-   temporarily allow the VPC CIDR on 3306).
+2. Pick the Default VPC from Phase 2 and either the **Pod subnet** (it has
+   NAT Gateway internet access) or an **ALB subnet** (has direct internet
+   access) — both work fine for this. Security group: one that's allowed
+   into your RDS security group on port 3306 (add an inbound rule on the RDS
+   SG for that CloudShell SG, or temporarily allow the VPC CIDR on 3306).
 3. In that CloudShell session:
    ```sh
    sudo yum install -y mariadb105
@@ -358,7 +362,7 @@ repository secret**, add:
   are wrong/missing.
 - **`ImagePullBackOff`** — double-check `AWS_ACCOUNT_ID` and `AWS_REGION`
   secrets match your actual ECR repo URIs. Also confirm the Fargate profile's
-  subnets are actually the 2 **Pod subnets** associated with `easycrud-pod-rt`
+  subnet is actually the **Pod subnet** associated with `easycrud-pod-rt`
   (Phase 2) — if a pod lands in an ALB subnet instead, it has no route to the
   NAT Gateway and can't reach ECR at all.
 
