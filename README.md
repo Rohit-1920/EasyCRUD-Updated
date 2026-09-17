@@ -1,3 +1,12 @@
+# EasyCRUD
+
+A Spring Boot + React/Vite student registration CRUD app, backed by MariaDB.
+
+- **Deploying to AWS (EKS Fargate, ECR, ALB Ingress, GitHub Actions):** see [`DEPLOYMENT.md`](./DEPLOYMENT.md)
+- **Local database setup:** see below
+
+---
+
 # MariaDB Setup and Configuration Guide for Windows
 
 This guide explains how to set up MariaDB, create a database, and Create Database User
