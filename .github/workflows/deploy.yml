@@ -1,0 +1,86 @@
+name: Build and Deploy to EKS Fargate
+
+on:
+  push:
+    branches: [dev]
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  BACKEND_IMAGE: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/easycrud-backend
+  FRONTEND_IMAGE: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/easycrud-frontend
+
+jobs:
+  build-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push backend image
+        working-directory: backend
+        run: |
+          docker build -f dockerfile -t "$BACKEND_IMAGE:${{ github.sha }}" -t "$BACKEND_IMAGE:latest" .
+          docker push "$BACKEND_IMAGE:${{ github.sha }}"
+          docker push "$BACKEND_IMAGE:latest"
+
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push frontend image
+        working-directory: frontend
+        run: |
+          docker build -f dockerfile -t "$FRONTEND_IMAGE:${{ github.sha }}" -t "$FRONTEND_IMAGE:latest" .
+          docker push "$FRONTEND_IMAGE:${{ github.sha }}"
+          docker push "$FRONTEND_IMAGE:latest"
+
+  deploy:
+    needs: [build-backend, build-frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.30.0
+
+      - name: Point kubectl at the EKS cluster
+        run: aws eks update-kubeconfig --name "${{ secrets.EKS_CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}"
+
+      - name: Substitute image references
+        run: |
+          sed -i "s|BACKEND_IMAGE_PLACEHOLDER|$BACKEND_IMAGE:${{ github.sha }}|g" k8s/backend-deployment.yaml
+          sed -i "s|FRONTEND_IMAGE_PLACEHOLDER|$FRONTEND_IMAGE:${{ github.sha }}|g" k8s/frontend-deployment.yaml
+
+      - name: Apply manifests
+        run: kubectl apply -f k8s/
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/backend -n easycrud --timeout=180s
+          kubectl rollout status deployment/frontend -n easycrud --timeout=180s
+
+      - name: Show ingress address
+        run: kubectl get ingress easycrud-ingress -n easycrud
